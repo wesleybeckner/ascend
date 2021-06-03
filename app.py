@@ -114,7 +114,7 @@ app.layout = html.Div([
                     dcc.Graph(id='plot_1',
                     figure=make_scatter(result, 'Beta', False)),
                     dcc.Graph(id='plot_2',
-                    figure=make_scatter(result, 'Failure Number', True)),
+                    figure=make_scatter(result, 'Failure Number', False)),
                 ], 
                 className='mini_container',
                 style={'width': '65%', 'float': 'right', 'display': 'inline-block'},
@@ -142,7 +142,7 @@ def update_plot(site, reason):
     next_fail = result.iloc[-1,0] + timedelta(days=TTF)
     result.Date = pd.DatetimeIndex(result.Date).strftime("%Y-%m-%d")
     return [make_scatter(result, 'Beta', False),
-            make_scatter(result, 'Failure Number', True),
+            make_scatter(result, 'Failure Number', False),
            result.to_dict('records'),
            f"Next Failure: {next_fail.date()}"]
 
