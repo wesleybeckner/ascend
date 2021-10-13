@@ -12,3 +12,6 @@
 3. sudo docker tag wab665/ascend ppgcycletime.azurecr.io/wab665/ascend
 4. sudo docker push ppgcycletime.azurecr.io/wab665/ascend
 5. sudo docker rmi ppgcycletime/wab665/ascend
+
+# APP SERVICE SETTINGS
+<img src="assets/app_service_settings.PNG"></img>
