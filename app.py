@@ -1,3 +1,4 @@
+from sklearn import linear_model
 import pandas as pd
 import numpy as np
 from datetime import timedelta
@@ -52,8 +53,8 @@ def make_crow_data(site_val = 'CHB',
     result = wrap_calc_beta(site)
     return result
 
-def make_scatter(result, y, log=False):
-    fig = px.scatter(result, x='Cumulative Days', y=y, color='Equipment/Process', size='Klbs',
+def make_scatter(result, y, color='Equipment/Process', log=False):
+    fig = px.scatter(result, x='Cumulative Days', y=y, color=color, size='Klbs',
                     log_x=log, log_y=log)
     fig.update_layout(
                     height= 400)
@@ -61,6 +62,68 @@ def make_scatter(result, y, log=False):
 
 def calc_beta(n, T, cumTTF):
     return n / (n * np.log(T) - np.sum(np.log(cumTTF[:n])))
+
+def find_peaks(result):
+    # find peaks, 4-padded
+    betas = result['Beta'].values[1:]
+    peaks = np.zeros(len(betas)+1)
+    peaks[5:-4][((betas[4:-4] - betas[3:-5] > 0) & 
+     (betas[4:-4] - betas[2:-6] > 0) &
+     (betas[4:-4] - betas[1:-7] > 0) &
+     (betas[4:-4] - betas[0:-8] > 0) &
+     (betas[4:-4] - betas[5:-3] > 0) & 
+     (betas[4:-4] - betas[6:-2] > 0) &
+     (betas[4:-4] - betas[7:-1] > 0) &
+     (betas[4:-4] - betas[8:] > 0)) |
+    ((betas[4:-4] - betas[3:-5] < 0) & 
+     (betas[4:-4] - betas[2:-6] < 0) &
+     (betas[4:-4] - betas[1:-7] < 0) &
+     (betas[4:-4] - betas[0:-8] < 0) &
+     (betas[4:-4] - betas[5:-3] < 0) & 
+     (betas[4:-4] - betas[6:-2] < 0) &
+     (betas[4:-4] - betas[7:-1] < 0) &
+     (betas[4:-4] - betas[8:] < 0)) ] = 1
+    peaks = np.argwhere(peaks).flatten()
+    return peaks
+
+def make_scatter_with_regr(result, peaks):
+    # plot len(peaks) + 1 linear models
+    log = False
+    fig = px.scatter(result, x='Cumulative Days', y='Failure Number', color='Peak', size='Klbs',
+                        log_x=log, log_y=log)
+    fig.update_layout(
+                    height= 400)
+
+    for i in range(len(peaks)+1):
+        # define range, fit model
+
+        model = linear_model.LinearRegression()
+        if i == 0: # first seg
+            segment = peaks[i]
+            x = result.iloc[0:segment]['Cumulative Days'].values
+            y = result.iloc[0:segment]['Failure Number'].values
+        elif i == len(peaks): # last seg
+            segment = peaks[i-1]
+            x = result.iloc[segment:]['Cumulative Days'].values
+            y = result.iloc[segment:]['Failure Number'].values
+        else: # middle segs
+            segment = peaks[i]
+            x = result.iloc[old_segment:segment]['Cumulative Days'].values
+            y = result.iloc[old_segment:segment]['Failure Number'].values
+        model.fit(x.reshape(-1,1),y)
+
+        # grab coefs, make line
+        m = model.coef_[0]
+        b = model.intercept_
+        regrx = np.linspace(x[0], x[-1])
+        regry = regrx*m+b
+
+        old_segment = segment
+        fig.add_trace(go.Scatter(x=regrx, y=regry,
+                        mode='lines',
+                        name=f'slope: {m:.3f}',
+                            ))
+    return fig
 
 # Load Data, Init Variables
 sites = pd.read_csv("crowamsaa_data.csv", parse_dates=['Date'])
@@ -72,6 +135,9 @@ TTF = predict_next_fail(*result.loc[result.shape[0]-1,
                         ['Failure Number', 'Cumulative Days', 'Beta']].values)
 next_fail = result.iloc[-1,0] + timedelta(days=TTF)
 result.Date = pd.DatetimeIndex(result.Date).strftime("%Y-%m-%d")
+peaks = find_peaks(result)
+result['Peak'] = False
+result.iloc[peaks, -1] = True
 
 # Build App
 server = Flask(__name__)
@@ -91,9 +157,16 @@ app.layout = html.Div([
                          value=site_vals[0],
                          multi=False,
                          className="dcc_control"),      
+            html.P('Fail Reason'),
             dcc.Dropdown(id='reason_dropdown',
                          options=[{'label': i, 'value': i} for i in fail_types],
                          value=fail_types[-1],
+                         multi=False,
+                         className="dcc_control"),   
+            html.P('Auto Regress'),
+            dcc.Dropdown(id='regress',
+                         options=[{'label': i, 'value': i} for i in ['True', 'False']],
+                         value='False',
                          multi=False,
                          className="dcc_control"),   
             dash_table.DataTable(
@@ -112,9 +185,9 @@ app.layout = html.Div([
             
         html.Div([
                     dcc.Graph(id='plot_1',
-                    figure=make_scatter(result, 'Beta', False)),
+                    figure=make_scatter(result, 'Beta', log=False)),
                     dcc.Graph(id='plot_2',
-                    figure=make_scatter(result, 'Failure Number', False)),
+                    figure=make_scatter(result, 'Failure Number', log=False)),
                 ], 
                 className='mini_container',
                 style={'width': '65%', 'float': 'right', 'display': 'inline-block'},
@@ -134,17 +207,29 @@ app.layout = html.Div([
      Output('table', 'data'),
      Output('fail_predict', 'children')],
     [Input('site_dropdown', 'value'),
-     Input('reason_dropdown', 'value')])
-def update_plot(site, reason):
+     Input('reason_dropdown', 'value'),
+    Input('regress', 'value')])
+def update_plot(site, reason, regress):
     result = make_crow_data(site, reason)
     TTF = predict_next_fail(*result.loc[result.shape[0]-1, 
                         ['Failure Number', 'Cumulative Days', 'Beta']].values)
     next_fail = result.iloc[-1,0] + timedelta(days=TTF)
     result.Date = pd.DatetimeIndex(result.Date).strftime("%Y-%m-%d")
-    return [make_scatter(result, 'Beta', False),
-            make_scatter(result, 'Failure Number', False),
-           result.to_dict('records'),
-           f"Next Failure: {next_fail.date()}"]
+    if regress == 'True':
+        peaks = find_peaks(result)
+        result['Peak'] = False
+        result.iloc[peaks, -1] = True
+        return [
+            make_scatter(result, 'Beta', 'Peak', False),
+            make_scatter_with_regr(result, peaks),
+            result.to_dict('records'),
+           f"Next Failure: {next_fail.date()}"
+        ]
+    else:
+        return [make_scatter(result, 'Beta', log=False),
+                make_scatter(result, 'Failure Number', log=False),
+               result.to_dict('records'),
+               f"Next Failure: {next_fail.date()}"]
 
 if __name__ == '__main__':
     app.run_server()
